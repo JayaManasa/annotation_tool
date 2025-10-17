@@ -12,7 +12,13 @@ class BoundingBox:
         'H': 'Hemorrhages',
         'D': 'Disc',
         'A': 'Microaneurysms',
-        'C': 'Cotton Wool Spots'
+        'C': 'Cotton Wool Spots',
+        'F': 'Fovea',
+        'E': 'Hard Exudates',
+        'L': 'Laser marks',
+        'N': 'NVD NVE',
+        'V': 'Vitreous hemorrhage',
+        'O': 'Other'
     }
 
     def __init__(self, x1, y1, x2, y2, canvasid=None):
@@ -22,18 +28,21 @@ class BoundingBox:
         self.y2 = max(y1, y2)
         self.canvasid = canvasid
         self.selected = False
-        self.classification = None  # ADDED: For classification support
+        self.classification = None
 
     def get_coords(self):
         return self.x1, self.y1, self.x2, self.y2
 
     def contains_point(self, x, y):
-        return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
+        # IMPROVED: Added margin for easier selection
+        margin = 5
+        return (self.x1 - margin) <= x <= (self.x2 + margin) and (self.y1 - margin) <= y <= (self.y2 + margin)
 
     def get_color(self):
         """Get color based on classification"""
         if self.classification:
-            colors = {'M': 'yellow', 'H': 'red', 'D': 'blue', 'A': 'green', 'C': 'orange'}
+            colors = {'M': 'yellow', 'H': 'red', 'D': 'blue', 'A': 'green', 'C': 'orange', 'F': 'cyan',
+                      'E': 'magenta', 'L': 'purple', 'N': 'pink', 'V': 'brown', 'O': 'gray'}
             return colors.get(self.classification, 'blue')
         return 'blue'
 
@@ -45,15 +54,15 @@ class ImageViewer(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Joly AI Image Annotator")
-        self.geometry("1600x900")  # MODIFIED: Increased width for magnifier panel
+        self.geometry("1600x900")
         self.configure(bg='white')
 
         # UI Elements
         self.filelistbox = None
         self.filenamelabel = None
         self.imagecanvas = None
-        self.magnifiercanvas = None  # ADDED: New magnifier canvas
-        self.magnifierlabel = None  # ADDED: New magnifier label
+        self.magnifiercanvas = None
+        self.magnifierlabel = None
         self.selectedfolder = None
         self.currentimage = None
         self.currentindex = -1
@@ -62,10 +71,10 @@ class ImageViewer(tk.Tk):
         self.imageoffsetx = 0
         self.imageoffsety = 0
 
-        # ADDED: Magnifier settings
-        self.magnifierzoom = 3.0  # Zoom factor for magnifier
-        self.magnifiersize = 400  # Size of the magnifier view area
-        self.magnifiedimage = None  # Store magnified image
+        # Magnifier settings
+        self.magnifierzoom = 3.0
+        self.magnifiersize = 400
+        self.magnifiedimage = None
 
         # Bounding box management
         self.boundingboxes = []
@@ -74,14 +83,18 @@ class ImageViewer(tk.Tk):
         self.starty = 0
         self.currentboxid = None
         self.selectedbox = None
-        self.pendingclassification = None  # ADDED: For pending classification
-        self.classificationmode = False  # ADDED: Track classification state
-        self.instructionlabel = None  # ADDED: For classification instructions
+        self.pendingclassification = None
+        self.classificationmode = False
+        self.instructionlabel = None
+
+        # ADDED: Context menu for bounding boxes
+        self.contextmenu = None
 
         self.imageextensions = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ppm', '.pgm', '.pbm')
         self.createtopnavbar()
         self.createcontainerframe()
-        self.bindcanvasevents()  # MODIFIED: Now includes mouse motion
+        self.createcontextmenu()  # ADDED: Create context menu
+        self.bindcanvasevents()
         self.bindkeyboardevents()
 
     def createtopnavbar(self):
@@ -96,9 +109,11 @@ class ImageViewer(tk.Tk):
         btndeleteselected = tk.Button(buttonframe, text="Delete Selected", command=self.deleteselectedbox, bg='#ffdddd')
         btnsave = tk.Button(buttonframe, text="Save Annotations", command=self.savecurrentannotations, bg='#ccffcc')
 
-        # ADDED: Zoom buttons
         btnzoomin = tk.Button(buttonframe, text="Zoom+ Magnifier", command=self.increasemagnifierzoom, bg='#e6f2ff')
         btnzoomout = tk.Button(buttonframe, text="Zoom- Magnifier", command=self.decreasemagnifierzoom, bg='#e6f2ff')
+
+        # ADDED: Status label for annotation count
+        self.statuslabel = tk.Label(buttonframe, text="Annotations: 0", font=('Arial', 10), bg='white')
 
         btnsave.pack(side=tk.LEFT, padx=10, pady=5)
         btnselect.pack(side=tk.LEFT, padx=10, pady=(10, 0))
@@ -106,8 +121,19 @@ class ImageViewer(tk.Tk):
         btndeleteselected.pack(side=tk.LEFT, padx=10, pady=5)
         btnzoomin.pack(side=tk.LEFT, padx=5, pady=5)
         btnzoomout.pack(side=tk.LEFT, padx=5, pady=5)
+        self.statuslabel.pack(side=tk.LEFT, padx=20, pady=5)  # ADDED
         btnright.pack(side=tk.RIGHT, padx=10, pady=5)
         btnleft.pack(side=tk.RIGHT, padx=10, pady=5)
+
+    # ADDED: Create context menu
+    def createcontextmenu(self):
+        """Create right-click context menu for bounding boxes"""
+        self.contextmenu = tk.Menu(self, tearoff=0)
+        self.contextmenu.add_command(label="Delete This Box", command=self.deleteselectedbox)
+        self.contextmenu.add_command(label="Reclassify", command=self.reclassifybox)
+        self.contextmenu.add_separator()
+        self.contextmenu.add_command(label="Show Info", command=self.showboxinfo)
+        self.contextmenu.add_command(label="Cancel", command=lambda: self.contextmenu.unpost())
 
     def createcontainerframe(self):
         container = tk.Frame(self, bg='white')
@@ -127,31 +153,36 @@ class ImageViewer(tk.Tk):
         self.filenamelabel = tk.Label(middlepane, text="Select an image to view", font=('Arial', 12), bg='white')
         self.filenamelabel.pack(padx=10, pady=10)
 
-        # ADDED: Image canvas in middle pane
         self.imagecanvas = tk.Canvas(middlepane, bg='white', highlightthickness=0)
         self.imagecanvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # ADDED: Right pane: 20% magnifier panel
+        # Right pane: 20% magnifier panel
         rightpane = tk.Frame(container, bg='lightgray', relief=tk.RAISED, bd=2)
-        rightpane.place(relx=0.80, rely=0, relwidth=0.20, relheight=1)
+        rightpane.place(relx=0.75, rely=0, relwidth=0.25, relheight=1)
         tk.Label(rightpane, text="Magnifier", font=('Arial', 12, 'bold'), bg='lightgray').pack(pady=(10, 5))
         self.magnifiercanvas = tk.Canvas(rightpane, bg='white', width=self.magnifiersize, height=self.magnifiersize)
         self.magnifiercanvas.pack(pady=5)
         self.magnifierlabel = tk.Label(rightpane, text="Move cursor over image", font=('Arial', 10), bg='lightgray')
         self.magnifierlabel.pack(pady=5)
 
-        # ADDED: Zoom factor label
         self.zoomfactorlabel = tk.Label(rightpane, text=f"Zoom: {self.magnifierzoom}x", font=('Arial', 10),
                                         bg='lightgray')
         self.zoomfactorlabel.pack(pady=5)
+
+        # ADDED: Annotation list in right pane
+        tk.Label(rightpane, text="Annotations", font=('Arial', 12, 'bold'), bg='lightgray').pack(pady=(20, 5))
+        self.annotationlistbox = tk.Listbox(rightpane, bg='white', height=10)
+        self.annotationlistbox.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+        self.annotationlistbox.bind('<Double-Button-1>', self.selectannotationfromlist)
+        self.annotationlistbox.bind('<Button-3>', self.showcontextmenuforlist)
 
     def bindcanvasevents(self):
         """Bind mouse events for bounding box functionality"""
         self.imagecanvas.bind('<Button-1>', self.oncanvasclick)
         self.imagecanvas.bind('<B1-Motion>', self.oncanvasdrag)
         self.imagecanvas.bind('<ButtonRelease-1>', self.oncanvasrelease)
-        self.imagecanvas.bind('<Button-3>', self.onrightclick)
-        self.imagecanvas.bind('<Motion>', self.onmousemove)  # ADDED: Track mouse movement for magnifier
+        self.imagecanvas.bind('<Button-3>', self.onrightclick)  # Right-click for context menu
+        self.imagecanvas.bind('<Motion>', self.onmousemove)
 
     def bindkeyboardevents(self):
         """Bind keyboard events for arrow key navigation"""
@@ -170,16 +201,26 @@ class ImageViewer(tk.Tk):
         self.bind('A', lambda e: self.classifybox('A'))
         self.bind('c', lambda e: self.classifybox('C'))
         self.bind('C', lambda e: self.classifybox('C'))
+        self.bind('f', lambda e: self.classifybox('F'))
+        self.bind('F', lambda e: self.classifybox('F'))
+        self.bind('e', lambda e: self.classifybox('E'))
+        self.bind('E', lambda e: self.classifybox('E'))
+        self.bind('l', lambda e: self.classifybox('L'))
+        self.bind('L', lambda e: self.classifybox('L'))
+        self.bind('n', lambda e: self.classifybox('N'))
+        self.bind('N', lambda e: self.classifybox('N'))
+        self.bind('v', lambda e: self.classifybox('V'))
+        self.bind('V', lambda e: self.classifybox('V'))
+        self.bind('o', lambda e: self.classifybox('O'))
+        self.bind('O', lambda e: self.classifybox('O'))
         self.focus_set()
 
-    # ADDED: Magnifier methods
     def onmousemove(self, event):
         """Handle mouse movement to update magnifier"""
         if not self.originalimage:
             return
         canvasx, canvasy = event.x, event.y
 
-        # Convert canvas coords to original image coords
         origx = (canvasx - self.imageoffsetx) / self.displayscale
         origy = (canvasy - self.imageoffsety) / self.displayscale
 
@@ -189,7 +230,6 @@ class ImageViewer(tk.Tk):
             return
 
         try:
-            # Calculate region to crop from original image
             cropsize = self.magnifiersize // self.magnifierzoom
             left = max(0, int(origx - cropsize // 2))
             top = max(0, int(origy - cropsize // 2))
@@ -200,18 +240,16 @@ class ImageViewer(tk.Tk):
             magnified = cropped.resize((self.magnifiersize, self.magnifiersize), Image.Resampling.NEAREST)
             self.magnifiedimage = ImageTk.PhotoImage(magnified)
 
-            # Clear and redraw magnifier
             self.magnifiercanvas.delete('all')
             self.magnifiercanvas.create_image(0, 0, anchor=tk.NW, image=self.magnifiedimage)
 
-            # Draw crosshair at center
             center = self.magnifiersize // 2
             self.magnifiercanvas.create_line(center - 10, center, center + 10, center, fill='red', width=2)
             self.magnifiercanvas.create_line(center, center - 10, center, center + 10, fill='red', width=2)
 
             self.magnifierlabel.config(text=f"Magnified at ({int(origx)}, {int(origy)})")
         except Exception as e:
-            pass  # Ignore errors like invalid crop
+            pass
 
     def increasemagnifierzoom(self):
         """Increase magnifier zoom factor"""
@@ -271,7 +309,7 @@ class ImageViewer(tk.Tk):
 
     def previousimage(self):
         """Navigate to previous image"""
-        if self.currentindex < 0:
+        if self.currentindex >= 0:
             currentfilename = self.filelistbox.get(self.currentindex)
             self.saveannotations(currentfilename)
         if self.filelistbox.size() == 0:
@@ -284,7 +322,7 @@ class ImageViewer(tk.Tk):
 
     def nextimage(self):
         """Navigate to next image"""
-        if self.currentindex < 0:
+        if self.currentindex >= 0:
             currentfilename = self.filelistbox.get(self.currentindex)
             self.saveannotations(currentfilename)
         if self.filelistbox.size() == 0:
@@ -306,7 +344,7 @@ class ImageViewer(tk.Tk):
             self.imagecanvas.update_idletasks()
             canvaswidth = self.imagecanvas.winfo_width()
             canvasheight = self.imagecanvas.winfo_height()
-            if canvaswidth <= 1 or canvasheight <= 1:  # Canvas not yet sized
+            if canvaswidth <= 1 or canvasheight <= 1:
                 canvaswidth = 800
                 canvasheight = 600
             imgwidth, imgheight = self.originalimage.size
@@ -325,11 +363,30 @@ class ImageViewer(tk.Tk):
             messagebox.showerror("Error", f"Could not load image: {str(e)}")
 
     def oncanvasclick(self, event):
-        """Handle canvas click - start drawing bounding box"""
+        """Handle canvas click - start drawing bounding box or select existing"""
+        # IMPROVED: Check if clicking on existing box first
+        clickedbox = self.findboxatpoint(event.x, event.y)
+        if clickedbox:
+            # Select the box instead of starting new drawing
+            self.deselectallboxes()
+            self.selectedbox = clickedbox
+            clickedbox.selected = True
+            self.imagecanvas.itemconfig(clickedbox.canvasid, outline='green', width=3)
+            self.updateannotationlist()
+            return
+
+        # Start drawing new box
         self.deselectallboxes()
         self.startx = event.x
         self.starty = event.y
         self.drawingbox = True
+
+    def findboxatpoint(self, x, y):
+        """Find bounding box at given point"""
+        for bbox in reversed(self.boundingboxes):  # Check from top to bottom
+            if bbox.contains_point(x, y):
+                return bbox
+        return None
 
     def oncanvasdrag(self, event):
         """Handle canvas drag - update bounding box preview"""
@@ -338,18 +395,17 @@ class ImageViewer(tk.Tk):
                 self.imagecanvas.delete(self.currentboxid)
             self.currentboxid = self.imagecanvas.create_rectangle(self.startx, self.starty, event.x, event.y,
                                                                   outline='red', width=2)
-            # ADDED: Update magnifier during drag
             self.updatemagnifier(event.x, event.y)
 
     def updatemagnifier(self, canvasx, canvasy):
-        """Update magnifier with current cursor position - alias for onmousemove logic"""
+        """Update magnifier with current cursor position"""
         self.onmousemove(type('Event', (), {'x': canvasx, 'y': canvasy})())
 
     def oncanvasrelease(self, event):
         """Handle mouse release - finalize bounding box"""
         if self.drawingbox:
             self.drawingbox = False
-            if abs(event.x - self.startx) > 5 and abs(event.y - self.starty) > 5:  # Only create box if meaningful size
+            if abs(event.x - self.startx) > 5 and abs(event.y - self.starty) > 5:
                 if self.currentboxid:
                     self.imagecanvas.delete(self.currentboxid)
                 bbox = BoundingBox(self.startx, self.starty, event.x, event.y)
@@ -363,50 +419,151 @@ class ImageViewer(tk.Tk):
             if self.currentboxid:
                 self.imagecanvas.delete(self.currentboxid)
                 self.currentboxid = None
-            # ADDED: Update magnifier after release
             self.updatemagnifier(event.x, event.y)
 
     def onrightclick(self, event):
-        """Handle right click - select bounding box"""
-        clickedbox = None
-        for bbox in self.boundingboxes:
-            if bbox.contains_point(event.x, event.y):
-                clickedbox = bbox
-                break
+        """Handle right click - show context menu for bounding box"""
+        clickedbox = self.findboxatpoint(event.x, event.y)
+
         self.deselectallboxes()
+
         if clickedbox:
             self.selectedbox = clickedbox
             clickedbox.selected = True
             self.imagecanvas.itemconfig(clickedbox.canvasid, outline='green', width=3)
+            self.updateannotationlist()
+
+            # IMPROVED: Show context menu at cursor position
+            try:
+                self.contextmenu.tk_popup(event.x_root, event.y_root, 0)
+            finally:
+                self.contextmenu.grab_release()
+
+    # ADDED: Select annotation from list
+    def selectannotationfromlist(self, event):
+        """Double-click on annotation list to select box"""
+        selection = self.annotationlistbox.curselection()
+        if selection:
+            index = selection[0]
+            if index < len(self.boundingboxes):
+                self.deselectallboxes()
+                self.selectedbox = self.boundingboxes[index]
+                self.selectedbox.selected = True
+                self.imagecanvas.itemconfig(self.selectedbox.canvasid, outline='green', width=3)
+
+    # ADDED: Show context menu for list
+    def showcontextmenuforlist(self, event):
+        """Right-click on annotation list to show context menu"""
+        selection = self.annotationlistbox.curselection()
+        if selection:
+            index = selection[0]
+            if index < len(self.boundingboxes):
+                self.deselectallboxes()
+                self.selectedbox = self.boundingboxes[index]
+                self.selectedbox.selected = True
+                self.imagecanvas.itemconfig(self.selectedbox.canvasid, outline='green', width=3)
+                try:
+                    self.contextmenu.tk_popup(event.x_root, event.y_root, 0)
+                finally:
+                    self.contextmenu.grab_release()
+
+    # ADDED: Reclassify selected box
+    def reclassifybox(self):
+        """Reclassify the selected bounding box"""
+        if self.selectedbox:
+            self.pendingclassification = self.selectedbox
+            self.classificationmode = True
+            self.showclassificationinstruction()
+
+    # ADDED: Show box info
+    def showboxinfo(self):
+        """Show information about selected bounding box"""
+        if self.selectedbox:
+            origx1 = (self.selectedbox.x1 - self.imageoffsetx) / self.displayscale
+            origy1 = (self.selectedbox.y1 - self.imageoffsety) / self.displayscale
+            origx2 = (self.selectedbox.x2 - self.imageoffsetx) / self.displayscale
+            origy2 = (self.selectedbox.y2 - self.imageoffsety) / self.displayscale
+            width = abs(origx2 - origx1)
+            height = abs(origy2 - origy1)
+
+            info = f"Classification: {self.selectedbox.get_classification_name()}\n"
+            info += f"Coordinates: ({int(origx1)}, {int(origy1)}) to ({int(origx2)}, {int(origy2)})\n"
+            info += f"Size: {int(width)} x {int(height)} pixels"
+
+            messagebox.showinfo("Bounding Box Info", info)
 
     def deselectallboxes(self):
         """Deselect all bounding boxes"""
         for bbox in self.boundingboxes:
             if bbox.selected:
                 bbox.selected = False
-                self.imagecanvas.itemconfig(bbox.canvasid, outline='blue', width=2)
+                color = bbox.get_color() if bbox.classification else 'blue'
+                self.imagecanvas.itemconfig(bbox.canvasid, outline=color, width=2)
         self.selectedbox = None
+        self.updateannotationlist()
 
     def clearallboxes(self):
         """Clear all bounding boxes"""
+        # IMPROVED: Ask for confirmation
+        if self.boundingboxes:
+            result = messagebox.askyesno("Confirm", f"Delete all {len(self.boundingboxes)} annotations?")
+            if not result:
+                return
+
         for bbox in self.boundingboxes:
             if bbox.canvasid:
                 self.imagecanvas.delete(bbox.canvasid)
         self.boundingboxes.clear()
         self.selectedbox = None
+        self.updateannotationlist()
+        self.updatestatusbar()
 
     def deleteselectedbox(self):
         """Delete the currently selected bounding box"""
         if self.selectedbox:
+            # IMPROVED: Optional confirmation
+            # result = messagebox.askyesno("Confirm", "Delete this annotation?")
+            # if not result:
+            #     return
+
             self.imagecanvas.delete(self.selectedbox.canvasid)
             self.boundingboxes.remove(self.selectedbox)
             self.selectedbox = None
+            self.updateannotationlist()
+            self.updatestatusbar()
+            print("Deleted selected annotation")
+
+    # ADDED: Update annotation list
+    def updateannotationlist(self):
+        """Update the annotation listbox"""
+        self.annotationlistbox.delete(0, tk.END)
+        for i, bbox in enumerate(self.boundingboxes):
+            classname = bbox.get_classification_name() if bbox.classification else "Unclassified"
+            displaytext = f"{i + 1}. {classname}"
+            if bbox.selected:
+                displaytext += " (Selected)"
+            self.annotationlistbox.insert(tk.END, displaytext)
+
+            color = bbox.get_color() if bbox.classification else 'white'
+            self.annotationlistbox.itemconfig(i, {'fg': color})
+            if bbox.selected:
+                self.annotationlistbox.itemconfig(i, {'bg': 'darkgray'})
+                self.annotationlistbox.selection_set(i)
+            else:
+                self.annotationlistbox.itemconfig(i, {'bg': 'black'})
+        self.updatestatusbar()
+
+    # ADDED: Update status bar
+    def updatestatusbar(self):
+        """Update status label with annotation count"""
+        classified = len([b for b in self.boundingboxes if b.classification])
+        total = len(self.boundingboxes)
+        self.statuslabel.config(text=f"Annotations: {classified}/{total} classified")
 
     def showclassificationinstruction(self):
         """Show classification instruction to user"""
-        instructiontext = "Classify: M(Macula), H(Hemorrhages), D(Disc), A(Microaneurysms), C(Cotton Wool Spots)"
+        instructiontext = "Classify: M(Macula), H(Hemorrhages), D(Disc), A(Microaneurysms), C(Cotton Wool Spots), F(Fovea), E(Hard Exudates), L(Laser marks), N(NVD NVE), V(Vitreous hemorrhage), O(Other) "
 
-        # Fixed: Check if label is None or doesn't exist
         if self.instructionlabel is None:
             self.instructionlabel = tk.Label(
                 self,
@@ -421,7 +578,6 @@ class ImageViewer(tk.Tk):
 
     def hideclassificationinstruction(self):
         """Hide classification instruction"""
-        # Fixed: Check if label exists and is not None
         if self.instructionlabel is not None:
             self.instructionlabel.pack_forget()
 
@@ -436,6 +592,7 @@ class ImageViewer(tk.Tk):
             self.classificationmode = False
             if hasattr(self, 'hideclassificationinstruction'):
                 self.hideclassificationinstruction()
+            self.updateannotationlist()
             print(f"Box classified as {classificationkey}")
 
     def cleanupunclassifiedboxes(self):
@@ -507,21 +664,26 @@ class ImageViewer(tk.Tk):
 
     def loadannotations(self, filename):
         """Load bounding box coordinates and classifications from JSON file"""
+        # Clear existing boxes first
+        self.boundingboxes.clear()
+
         basename = os.path.splitext(filename)[0]
         annotationfile = os.path.join(self.selectedfolder, f"{basename}.txt")
         if not os.path.exists(annotationfile):
+            self.updateannotationlist()
             return
         try:
             with open(annotationfile, 'r') as f:
                 content = f.read().strip()
             if not content:
                 print(f"Empty annotation file: {annotationfile}")
+                self.updateannotationlist()
                 return
             try:
                 annotationdata = json.loads(content)
             except json.JSONDecodeError as e:
                 print(f"Invalid JSON in {annotationfile}: {e}")
-                # Fallback to old format if needed (not implemented here)
+                self.updateannotationlist()
                 return
 
             for annotation in annotationdata.get('annotations', []):
@@ -546,9 +708,11 @@ class ImageViewer(tk.Tk):
                 bbox.canvasid = canvasid
                 self.boundingboxes.append(bbox)
             print(f"Loaded {len(annotationdata.get('annotations', []))} annotations")
+            self.updateannotationlist()
         except Exception as e:
             print(f"Could not load annotations from {annotationfile}: {str(e)}")
             messagebox.showerror("Error", f"Could not load annotations: {str(e)}")
+            self.updateannotationlist()
 
     def savecurrentannotations(self):
         """Save annotations for current image"""
@@ -563,6 +727,7 @@ class ImageViewer(tk.Tk):
         classifiedcount = len([bbox for bbox in self.boundingboxes if
                                hasattr(bbox, 'classification') and bbox.classification is not None])
         messagebox.showinfo("Success", f"Saved {classifiedcount} classified annotations!")
+        self.updateannotationlist()
 
 
 if __name__ == "__main__":
