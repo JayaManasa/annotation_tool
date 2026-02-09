@@ -16,9 +16,8 @@ class BoundingBox:
         'F': 'Fovea',
         'E': 'Hard Exudates',
         'L': 'Laser marks',
-        'N': 'NVD',
+        'N': 'NVD NVE',
         'V': 'Vitreous hemorrhage',
-        'X': 'NVE',
         'O': 'Other'
     }
 
@@ -42,7 +41,7 @@ class BoundingBox:
         """Get color based on classification"""
         if self.classification:
             colors = {'M': 'yellow', 'H': 'red', 'D': 'blue', 'A': 'green', 'C': 'orange', 'F': 'cyan',
-                      'E': 'magenta', 'L': 'purple', 'N': 'pink', 'V': 'brown', 'O': 'gray', 'X':'black'}
+                      'E': 'magenta', 'L': 'purple', 'N': 'pink', 'V': 'brown', 'O': 'gray'}
             return colors.get(self.classification, 'blue')
         return 'blue'
 
@@ -147,12 +146,24 @@ class ImageViewer(tk.Tk):
         container = tk.Frame(self, bg='white')
         container.pack(fill=tk.BOTH, expand=True)
 
-        # Left pane: 10% file list
+        # Left pane: 10% file list with scrollbar
         leftpane = tk.Frame(container, bg='white')
         leftpane.place(relx=0, rely=0, relwidth=0.10, relheight=1)
         tk.Label(leftpane, text="Files", bg='white', font=('Arial', 10, 'bold')).pack(padx=5, pady=(10, 5))
-        self.filelistbox = tk.Listbox(leftpane, bg='white', font=('Arial', 9))
-        self.filelistbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Create frame for listbox and scrollbar
+        listframe = tk.Frame(leftpane, bg='white')
+        listframe.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Add scrollbar
+        scrollbar = tk.Scrollbar(listframe, orient=tk.HORIZONTAL)
+        scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Create listbox with scrollbar
+        self.filelistbox = tk.Listbox(listframe, bg='white', font=('Arial', 9),
+                                      xscrollcommand=scrollbar.set)
+        self.filelistbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.filelistbox.xview)
         self.filelistbox.bind('<<ListboxSelect>>', self.onfileselect)
 
         # Middle pane: 70% image display
@@ -254,8 +265,6 @@ class ImageViewer(tk.Tk):
         self.bind('V', lambda e: self.classifybox('V'))
         self.bind('o', lambda e: self.classifybox('O'))
         self.bind('O', lambda e: self.classifybox('O'))
-        self.bind('x', lambda e: self.classifybox('X'))
-        self.bind('X', lambda e: self.classifybox('X'))
         self.focus_set()
 
     def onmousemove(self, event):
@@ -449,8 +458,19 @@ class ImageViewer(tk.Tk):
                  os.path.isfile(os.path.join(folderpath, f)) and f.lower().endswith(self.imageextensions)]
         files.sort()
         self.filelistbox.delete(0, tk.END)
-        for file in files:
-            self.filelistbox.insert(tk.END, file)
+        for idx, file in enumerate(files):
+            # Check if annotation file exists
+            basename = os.path.splitext(file)[0]
+            annotationfile = os.path.join(folderpath, f"{basename}.txt")
+            has_annotation = os.path.exists(annotationfile)
+
+            # Insert file with marker if annotated
+            display_text = f"✓ {file}" if has_annotation else f"  {file}"
+            self.filelistbox.insert(tk.END, display_text)
+
+            # Color annotated files differently
+            if has_annotation:
+                self.filelistbox.itemconfig(idx, {'fg': 'green', 'selectforeground': 'darkgreen'})
         self.currentindex = -1
         if files:
             self.selectimagebyindex(0)
@@ -461,6 +481,7 @@ class ImageViewer(tk.Tk):
         if selectedindices:
             self.currentindex = selectedindices[0]
             filename = self.filelistbox.get(self.currentindex)
+            filename = filename.replace("✓ ", "").strip()
             self.filenamelabel.config(text=filename)
             self.displayimage(filename)
 
@@ -479,6 +500,7 @@ class ImageViewer(tk.Tk):
         self.filelistbox.activate(index)
         self.filelistbox.see(index)
         filename = self.filelistbox.get(index)
+        filename = filename.replace("✓ ", "").strip()
         self.filenamelabel.config(text=filename)
         self.displayimage(filename)
 
@@ -733,7 +755,7 @@ class ImageViewer(tk.Tk):
 
     def showclassificationinstruction(self):
         """Show classification instruction to user"""
-        instructiontext = "Classify: M(Macula), H(Hemorrhages), D(Disc), A(Microaneurysms), C(Cotton Wool Spots), F(Fovea), E(Hard Exudates), L(Laser marks), N(NVD), V(Vitreous hemorrhage),X(NVE), O(Other)"
+        instructiontext = "Classify: M(Macula), H(Hemorrhages), D(Disc), A(Microaneurysms), C(Cotton Wool Spots), F(Fovea), E(Hard Exudates), L(Laser marks), N(NVD NVE), V(Vitreous hemorrhage), O(Other)"
 
         if self.instructionlabel is None:
             self.instructionlabel = tk.Label(
