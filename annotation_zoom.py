@@ -72,6 +72,11 @@ class ImageViewer(tk.Tk):
         self.imageoffsetx = 0
         self.imageoffsety = 0
 
+        # Store the list of actual filenames (without display formatting)
+        self.filenames = []
+        # Store indices of files matching current search filter
+        self.filtered_indices = []
+
         # Magnifier settings - will be dynamically updated
         self.magnifierzoom = 3.0
         self.magnifiersize = 300  # Initial size, will be updated dynamically
@@ -150,6 +155,21 @@ class ImageViewer(tk.Tk):
         leftpane = tk.Frame(container, bg='white')
         leftpane.place(relx=0, rely=0, relwidth=0.10, relheight=1)
         tk.Label(leftpane, text="Files", bg='white', font=('Arial', 10, 'bold')).pack(padx=5, pady=(10, 5))
+
+        # Search frame
+        searchframe = tk.Frame(leftpane, bg='white')
+        searchframe.pack(fill=tk.X, padx=5, pady=(0, 5))
+
+        tk.Label(searchframe, text="🔍", bg='white', font=('Arial', 9)).pack(side=tk.LEFT)
+        self.searchvar = tk.StringVar()
+        self.searchvar.trace('w', self.onsearchchange)
+        self.searchentry = tk.Entry(searchframe, textvariable=self.searchvar, font=('Arial', 9))
+        self.searchentry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+
+        # Clear search button
+        self.clearsearchbtn = tk.Button(searchframe, text="✕", command=self.clearsearch,
+                                        font=('Arial', 8), width=2, relief=tk.FLAT)
+        self.clearsearchbtn.pack(side=tk.RIGHT)
 
         # Create frame for listbox and scrollbar
         listframe = tk.Frame(leftpane, bg='white')
@@ -412,7 +432,7 @@ class ImageViewer(tk.Tk):
 
             # Reload current image to update magnifier
             if self.currentindex >= 0:
-                filename = self.filelistbox.get(self.currentindex)
+                filename = self.filenames[self.currentindex]
                 self.loadpreprocessedimage(filename)
 
             messagebox.showinfo("Success", f"Preprocessed folder set:\n{folderselected}")
@@ -457,77 +477,133 @@ class ImageViewer(tk.Tk):
         files = [f for f in os.listdir(folderpath) if
                  os.path.isfile(os.path.join(folderpath, f)) and f.lower().endswith(self.imageextensions)]
         files.sort()
+        self.filenames = files  # Store the actual filenames
+        self.filtered_indices = list(range(len(files)))  # Initially show all files
+        self.clearsearch()  # Clear any existing search
+        self.refreshfilelistbox()
+        self.currentindex = -1
+        if files:
+            self.selectimagebyindex(0)
+
+    def refreshfilelistbox(self):
+        """Refresh the file listbox based on current filter"""
         self.filelistbox.delete(0, tk.END)
-        for idx, file in enumerate(files):
+        for display_idx, file_idx in enumerate(self.filtered_indices):
+            file = self.filenames[file_idx]
             # Check if annotation file exists
             basename = os.path.splitext(file)[0]
-            annotationfile = os.path.join(folderpath, f"{basename}.txt")
+            annotationfile = os.path.join(self.selectedfolder, f"{basename}.txt")
             has_annotation = os.path.exists(annotationfile)
 
-            # Insert file with marker if annotated
-            display_text = f"✓ {file}" if has_annotation else f"  {file}"
+            # Insert file with serial number and marker if annotated
+            serial_num = file_idx + 1  # 1-based serial number (original index)
+            checkmark = "✓" if has_annotation else " "
+            display_text = f"{serial_num:3d}. {checkmark} {file}"
             self.filelistbox.insert(tk.END, display_text)
 
             # Color annotated files differently
             if has_annotation:
-                self.filelistbox.itemconfig(idx, {'fg': 'green', 'selectforeground': 'darkgreen'})
-        self.currentindex = -1
-        if files:
-            self.selectimagebyindex(0)
+                self.filelistbox.itemconfig(display_idx, {'fg': 'green', 'selectforeground': 'darkgreen'})
+
+    def onsearchchange(self, *args):
+        """Handle search text change"""
+        searchtext = self.searchvar.get().lower().strip()
+        if not searchtext:
+            # Show all files
+            self.filtered_indices = list(range(len(self.filenames)))
+        else:
+            # Filter files matching search text
+            self.filtered_indices = [
+                i for i, filename in enumerate(self.filenames)
+                if searchtext in filename.lower()
+            ]
+        self.refreshfilelistbox()
+
+        # Update selection if current file is still visible
+        if self.currentindex >= 0 and self.currentindex in self.filtered_indices:
+            display_idx = self.filtered_indices.index(self.currentindex)
+            self.filelistbox.selection_clear(0, tk.END)
+            self.filelistbox.selection_set(display_idx)
+            self.filelistbox.see(display_idx)
+
+    def clearsearch(self):
+        """Clear the search field"""
+        self.searchvar.set("")
 
     def onfileselect(self, event):
         """Handle manual selection from listbox"""
         selectedindices = self.filelistbox.curselection()
         if selectedindices:
-            self.currentindex = selectedindices[0]
-            filename = self.filelistbox.get(self.currentindex)
-            filename = filename.replace("✓ ", "").strip()
-            self.filenamelabel.config(text=filename)
-            self.displayimage(filename)
+            display_idx = selectedindices[0]
+            # Map display index to actual file index
+            if display_idx < len(self.filtered_indices):
+                self.currentindex = self.filtered_indices[display_idx]
+                filename = self.filenames[self.currentindex]
+                self.filenamelabel.config(text=filename)
+                self.displayimage(filename)
 
     def selectimagebyindex(self, index):
-        """Select image by index and update display"""
-        totalfiles = self.filelistbox.size()
-        if totalfiles == 0:
+        """Select image by actual file index and update display"""
+        if len(self.filenames) == 0:
             return
         if index < 0:
             index = 0
-        elif index >= totalfiles:
-            index = totalfiles - 1
+        elif index >= len(self.filenames):
+            index = len(self.filenames) - 1
         self.currentindex = index
+
+        # Find display index in filtered list
         self.filelistbox.selection_clear(0, tk.END)
-        self.filelistbox.selection_set(index)
-        self.filelistbox.activate(index)
-        self.filelistbox.see(index)
-        filename = self.filelistbox.get(index)
-        filename = filename.replace("✓ ", "").strip()
+        if index in self.filtered_indices:
+            display_idx = self.filtered_indices.index(index)
+            self.filelistbox.selection_set(display_idx)
+            self.filelistbox.activate(display_idx)
+            self.filelistbox.see(display_idx)
+
+        filename = self.filenames[index]
         self.filenamelabel.config(text=filename)
         self.displayimage(filename)
 
     def previousimage(self):
-        """Navigate to previous image"""
+        """Navigate to previous image in filtered list"""
         if self.currentindex >= 0:
-            currentfilename = self.filelistbox.get(self.currentindex)
+            currentfilename = self.filenames[self.currentindex]
             self.saveannotations(currentfilename)
-        if self.filelistbox.size() == 0:
+        if len(self.filtered_indices) == 0:
             messagebox.showinfo("Info", "No images loaded!")
             return
-        newindex = self.currentindex - 1
-        if newindex < 0:
-            newindex = self.filelistbox.size() - 1
+
+        # Find current position in filtered list and go to previous
+        if self.currentindex in self.filtered_indices:
+            current_display_idx = self.filtered_indices.index(self.currentindex)
+            new_display_idx = current_display_idx - 1
+            if new_display_idx < 0:
+                new_display_idx = len(self.filtered_indices) - 1
+        else:
+            new_display_idx = len(self.filtered_indices) - 1
+
+        newindex = self.filtered_indices[new_display_idx]
         self.selectimagebyindex(newindex)
 
     def nextimage(self):
-        """Navigate to next image"""
+        """Navigate to next image in filtered list"""
         if self.currentindex >= 0:
-            currentfilename = self.filelistbox.get(self.currentindex)
+            currentfilename = self.filenames[self.currentindex]
             self.saveannotations(currentfilename)
-        if self.filelistbox.size() == 0:
+        if len(self.filtered_indices) == 0:
             messagebox.showinfo("Info", "No images loaded!")
             return
-        newindex = self.currentindex + 1
-        if newindex >= self.filelistbox.size():
-            newindex = 0
+
+        # Find current position in filtered list and go to next
+        if self.currentindex in self.filtered_indices:
+            current_display_idx = self.filtered_indices.index(self.currentindex)
+            new_display_idx = current_display_idx + 1
+            if new_display_idx >= len(self.filtered_indices):
+                new_display_idx = 0
+        else:
+            new_display_idx = 0
+
+        newindex = self.filtered_indices[new_display_idx]
         self.selectimagebyindex(newindex)
 
     def displayimage(self, filename):
@@ -914,7 +990,7 @@ class ImageViewer(tk.Tk):
         if unclassifiedcount > 0:
             messagebox.showinfo("Info",
                                 f"Removed {unclassifiedcount} unclassified boxes. Only classified boxes are saved.")
-        currentfilename = self.filelistbox.get(self.currentindex)
+        currentfilename = self.filenames[self.currentindex]
         self.saveannotations(currentfilename)
         classifiedcount = len([bbox for bbox in self.boundingboxes if
                                hasattr(bbox, 'classification') and bbox.classification is not None])
